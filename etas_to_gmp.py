@@ -68,12 +68,20 @@ motion_type_prams = {key:{ky:vl for ky,vl in zip(motion_type_prams_lst_vars, val
 #print('mtp: ', motion_type_prams)
 #
 #
-def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None):
+def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None, verbose=False):
 	# "ETAS to Ground-Motion:
 	# etas_size: if None, use raw data as they are. otherwise, re-size the lattice using scipy interpolation tools (grid_data() i think)
 	# gmp_size: if None, use raw (etas) data size, otherwise, create a grid... and for these two variables, we need to decide if we want
 	# to define the grid-size, or n_x/n_y, or have options for either. probably, handle a single number as a grid-size (and assume square);
 	# handle an array as lattice dimensions.
+	#
+	# to write file: does the path exist?\
+	if not fname_out is None:
+		p_name, f_name = os.path.split(fname_out)
+		if not os.path.isdir(p_name):
+			os.makedirs(p_name)
+		# should be using logging, but for now just use this switch.
+		if verbose: print('exporting data to: {}'.format(fname_out))
 	#
 	# we're going to be experimenting with some compilation and optimizations. when we build unit tests, we'll monitor elapsed time there.
 	# for now, this script is our unit test, so take some times...
@@ -216,7 +224,19 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 	#t1 = time.time()
 	#print(t1 - t0)
 	#
-	GMPE_rec.dump(fname_out)
+	if not (fname_out is None):
+		# export the pickle object:
+		#GMPE_rec.dump(fname_out)
+		GMPE_rec.dump('{}.pkl'.format(os.path.splitext(fname_out)[0]))
+		#
+		# and an xyz:
+		with open('{}.xyz'.format(os.path.splitext(fname_out)[0]), 'w') as f:
+			f.write('#xyz export of GMPE\n')
+			f.write('#!{}\n'.format('\t'.join(GMPE_rec.dtype.names)))
+			for rw in GMPE_rec:
+				f.write('{}\n'.format('\t'.join((str(x) for x in rw))))
+			#
+		#
 	#
 	#GMPE_rec.sort(order=('x','y'))
 	#plot_xyz_image(GMPE_rec, fignum=4, cmap='hot')
@@ -227,6 +247,11 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 		plt.clf()
 		plot_xyz_image(GMPE_rec, fignum=fignum+1, logz=False, cmap='jet')
 		plt.title('Shaking rates')
+		#
+		if not (fname_out is None):
+			fout_png = '{}.png'.format(os.path.splitext(fname_out)[0])
+			print('saving image to: {}'.format(fout_png))
+			plt.savefig(fout_png)
 		
 	
 	return GMPE_rec
