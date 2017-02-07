@@ -10,8 +10,8 @@ Created on Fri Apr  1 13:32:06 2016
 """
 #
 import numpy as np
-import scipy
 numpy = np		# i always write "numpy"; let's just catch it here.
+import scipy
 import math
 import itertools
 import matplotlib as mpl
@@ -68,7 +68,7 @@ motion_type_prams = {key:{ky:vl for ky,vl in zip(motion_type_prams_lst_vars, val
 #print('mtp: ', motion_type_prams)
 #
 #
-def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None, verbose=False):
+def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None, verbose=False, year_fraction=1.0):
 	# "ETAS to Ground-Motion:
 	# etas_size: if None, use raw data as they are. otherwise, re-size the lattice using scipy interpolation tools (grid_data() i think)
 	# gmp_size: if None, use raw (etas) data size, otherwise, create a grid... and for these two variables, we need to decide if we want
@@ -195,7 +195,7 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 		#
 		#resultses = [P.apply_async(calc_max_GMPEs, (), {'ETAS_rec':ETAS_rec[j_p*chunk_size:(j_p+1)*chunk_size], 'lon_range':gmp_lon_range, 'lat_range':gmp_lat_range, 'm_reff':5.0, 'just_z':True}) for j_p in range(n_procs)]
 		#
-		resultses = [P.apply_async(calc_GMPEs_exceedance, (), {'ETAS_mag_rec':forCalc_ETAS_mag_rec[j_p*chunk_size:(j_p+1)*chunk_size], 'rates_array':forCalc_rates_array[j_p*chunk_size:(j_p+1)*chunk_size], 'lon_range':gmp_lon_range, 'threshold':threshold, 'lat_range':gmp_lat_range, 'm_reff':0, 'just_z':True}) for j_p in range(n_procs)]
+		resultses = [P.apply_async(calc_GMPEs_exceedance, (), {'ETAS_mag_rec':forCalc_ETAS_mag_rec[j_p*chunk_size:(j_p+1)*chunk_size], 'rates_array':forCalc_rates_array[j_p*chunk_size:(j_p+1)*chunk_size], 'lon_range':gmp_lon_range, 'threshold':threshold, 'lat_range':gmp_lat_range, 'm_reff':0, 'just_z':True, 'year_fraction':year_fraction}) for j_p in range(n_procs)]
 		#
 		P.close()
 		P.join()
@@ -219,7 +219,7 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 		# there are different ways to calculate GMPE. just so we can get a number, let's just aggregate the output for now.
 		#GMPE_rec = calc_max_GMPEs(ETAS_rec=ETAS_rec, lat_range=gmp_lat_range, lon_range=gmp_lon_range, m_reff=5.0, just_z=False)
 		# Wilson: Uses forumlae for rate of exceedence of a threshold acceleration, by default we use 0.2g 
-		GMPE_rec = calc_GMPEs_exceedance(ETAS_mag_rec=forCalc_ETAS_mag_rec, rates_array=forCalc_rates_array, threshold=threshold, lon_range=gmp_lon_range, lat_range=gmp_lat_range)
+		GMPE_rec = calc_GMPEs_exceedance(ETAS_mag_rec=forCalc_ETAS_mag_rec, rates_array=forCalc_rates_array, threshold=threshold, lon_range=gmp_lon_range, lat_range=gmp_lat_range, year_fraction=year_fraction)
 	#
 	#t1 = time.time()
 	#print(t1 - t0)
@@ -311,7 +311,7 @@ def calc_max_GMPEs(ETAS_rec=None, lat_range=None, lon_range=None, mc=2.5, m_reff
 		return GMPE_rec
 #
 #
-def calc_GMPEs_exceedance(ETAS_mag_rec=None, rates_array=None, lon_range=None, lat_range=None, m_reff=0., mc=2.5, threshold= 0.2, motion_type="PGA-soil", just_z=False):
+def calc_GMPEs_exceedance(ETAS_mag_rec=None, rates_array=None, lon_range=None, lat_range=None, m_reff=0., mc=2.5, threshold= 0.2, motion_type="PGA-soil", just_z=False, year_fraction=1.0):
 	#
 	# construct GMP array and calculate GM from ETAS. this function to be used as an mpp.Pool() worker.
 	#GMPE_rec =[[x,y,0.] for x,y in itertools.product(np.arange(*lon_range), np.arange(*lat_range))]	# check these for proper
@@ -346,10 +346,11 @@ def calc_GMPEs_exceedance(ETAS_mag_rec=None, rates_array=None, lon_range=None, l
 		#
 		# ... and i think this is killing us performance-wise. is there a shortcut?
 		#
-		# Threshold given in g's, cue-heaton eqns give accels in cm/s2. 
+		# Probability to exceed the threshold in one year. Threshold given in g's, cue-heaton eqns give accels in cm/s2. 
 		Prob_exceed = int_log_norm(S_Horiz_Soil_Acc, threshold*980.665, motion_type)
 		#
-		rate_exceed = Prob_exceed*1.0#rate
+         # Rate of exceedance for some given fraction of year.
+		rate_exceed = Prob_exceed*year_fraction#rate
 		#
 		GMPE_rec['z'][k] += rate_exceed
 				
@@ -753,12 +754,14 @@ if __name__=='__main__':
 	#kwds = {key:float(val) for key,val in kwds.items()}
 	#pargs = [float(x) for x in pargs]
 	#
-	kwds['etas_src']='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz'
+	kwds['etas_src']='etas_src/etas_nepal_2015_04_2016-11-12_11:02:56+00:00.xyz'#'etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz'
+	kwds['fname_out']='pickles/GMPE_nepal.p'
 	kwds['maxMag'] = 7.0
-	kwds['threshold'] = 0.2   # acceleration in g
-	kwds['percSource'] = 0.33 # top fraction of ETAS bins to use as shaking sources
-	kwds['fignum']=0          # start counting figures
-	kwds['n_procs']=4         # number of processors to use
+	kwds['threshold'] = 0.2          # acceleration in g
+	kwds['percSource'] = 0.33        # top fraction of ETAS bins to use as shaking sources
+	kwds['year_fraction'] = 1.0/12.0 # fraction of year for which to predict exceedances
+	kwds['fignum']=0                 # start counting figures
+	kwds['n_procs']=3                # number of processors to use
 	#	
 	X=etas_to_GM(*pargs, **kwds)
 else:

@@ -7,6 +7,8 @@ Created on Fri Apr  1 13:32:06 2016
 #
 # comments (yoder): we'll need to code this for Python3 compatibility.
 #    ... and i'd rewrite some of this to separate code from data.
+#
+######           Obsolete, use etas_to_gmp.py instead             ######
 """
 
 import numpy as np
