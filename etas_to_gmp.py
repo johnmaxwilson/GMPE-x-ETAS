@@ -27,8 +27,10 @@ import io
 import sys
 from scipy.interpolate import RectSphereBivariateSpline
 from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import interp1d
 from scipy.integrate import quad
 from scipy.optimize import curve_fit
+from scipy.special import erf
 import ANSStools as atp
 #
 have_numba=True
@@ -68,7 +70,7 @@ motion_type_prams = {key:{ky:vl for ky,vl in zip(motion_type_prams_lst_vars, val
 #print('mtp: ', motion_type_prams)
 #
 #
-def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None, verbose=False, year_fraction=1.0):
+def etas2gm_invertETAS(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None, verbose=False, year_fraction=1.0):
 	# "ETAS to Ground-Motion:
 	# etas_size: if None, use raw data as they are. otherwise, re-size the lattice using scipy interpolation tools (grid_data() i think)
 	# gmp_size: if None, use raw (etas) data size, otherwise, create a grid... and for these two variables, we need to decide if we want
@@ -93,7 +95,10 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 	print('open etas_src file: ', etas_src)
 	#
 	if isinstance(etas_src, str):
-		ETAS_array = open_xyz_file(etas_src)
+		if os.path.splitext(etas_src)[1] == '.xyz':
+			ETAS_array = open_xyz_file(etas_src)
+		else:
+			ETAS_array = numpy.load(etas_src)
 	else:
 		ETAS_array=numpy.copy(etas_src)
 	if not hasattr(ETAS_array, 'dtype'): ETAS_array = np.core.records.fromarrays(zip(*ETAS_array), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
@@ -159,6 +164,7 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 	gmp_lon_range = (min(lons), max(lons), gmp_size[1])
 	#
 	# Use observed earthquakes from the region to determine GR a and b values for rates.  Can specify b
+	print("Finding regional GR values")
 	bval, aval = regional_GR_rates(gmp_lon_range, gmp_lat_range, mc=4.5, date_range=['1990-1-1', None], b=1)
 	#
 	ETAS_mag_rec, rates_array = ETAS_to_mags_and_rates(ETAS_rec, gmp_lon_range, gmp_lat_range, aval, bval)
@@ -256,7 +262,205 @@ def etas_to_GM(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:
 	
 	return GMPE_rec
 #
-#	
+#
+def etas2gm_intOverMag(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz', fname_out='GMPE_rec.p', motion_type='PGA-soil', threshold = 0.2, maxMag = 7.0, percSource = 0.33, etas_size=None, gmp_size=None, n_procs=None, do_logz=True, fignum=None, verbose=False, year_fraction=1.0):
+	# Built off of etas2gm_invertETAS, but with a different method for going from ETAS results to ground motion
+	# Takes array of etas numbers as input (not rate densities -- already integrated over space and time)
+	# Uses GR dist. and integrates over magnitude to get contributions to shaking from the whole mag range
+	# For now, lets leave all the input keywords from etas2gm_invertETAS so we can pass the same parameters to both
+	#
+	# "ETAS to Ground-Motion:
+	# etas_size: if None, use raw data as they are. otherwise, re-size the lattice using scipy interpolation tools (grid_data() i think)
+	# gmp_size: if None, use raw (etas) data size, otherwise, create a grid... and for these two variables, we need to decide if we want
+	# to define the grid-size, or n_x/n_y, or have options for either. probably, handle a single number as a grid-size (and assume square);
+	# handle an array as lattice dimensions.
+	#
+	# to write file: does the path exist?\
+	if not fname_out is None:
+		p_name, f_name = os.path.split(fname_out)
+		if not os.path.isdir(p_name):
+			os.makedirs(p_name)
+		# should be using logging, but for now just use this switch.
+		if verbose: print('exporting data to: {}'.format(fname_out))
+	#
+	# we're going to be experimenting with some compilation and optimizations. when we build unit tests, we'll monitor elapsed time there.
+	# for now, this script is our unit test, so take some times...
+	t_test_0 = time.time()
+	#
+	#xyz = open('../globalETAS/etas_outputs/etas_xyz.xyz', 'r')
+	n_procs=(n_procs or mpp.cpu_count())	
+	#
+	print('open etas_src file: ', etas_src)
+	#
+	if isinstance(etas_src, str):
+		if os.path.splitext(etas_src)[1] == '.xyz':
+			ETAS_array = open_xyz_file(etas_src)
+		else:
+			ETAS_array = numpy.load(etas_src)
+	else:
+		ETAS_array=numpy.copy(etas_src)
+	if not hasattr(ETAS_array, 'dtype'): ETAS_array = np.core.records.fromarrays(zip(*ETAS_array), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+	# We don't need to do logz on expected number. # if do_logz: ETAS_array['z']=numpy.log10(ETAS_array['z'])
+	#
+	#
+	if fignum!=None:
+		plt.figure(fignum)
+		plt.clf()
+		plot_xyz_image(ETAS_array, fignum=fignum, logz=False, cmap='jet')
+		plt.title('ETAS number')
+
+	#
+	lons = sorted(list(set([x for x,y,z in ETAS_array])))
+	lats = sorted(list(set([y for x,y,z in ETAS_array])))
+	#
+	######################################
+	# resize/interpolate?::
+	# 
+	# are we re-sizing the lattice? for most cases, we can probably use a cartesian approximation, but scipy happens to have a
+	# cartesian-spherical (aka, lat/lon) interpolator:
+	# scipy.interpolate.RectSphereBivariateSpline... which breaks for complex data sets, like ETAS maps.
+	# however, scipy.interpolate.interp2d works well.
+	#
+	# interpolate_scipy() handles the size variable as follows: list-like are interpreted as the new shape;
+	# scalar-like are interpreted as a factor, new_size=(size*size[0], size*size[1])
+	#if isinstance(etas_size,int) or isinstance(etas_size,float): etas_size=(etas_size, etas_size)
+	#if isinstance(gmp_size,int) or isinstance(gmp_size,float): gmp_size=(gmp_size, gmp_size)
+	#
+	#
+	if etas_size == None: etas_size=(len(lats), len(lons))
+	if gmp_size  == None: gmp_size=etas_size
+	if isinstance(gmp_size, int) or isinstance(gmp_size, float): gmp_size=[gmp_size, gmp_size]
+	if isinstance(etas_size, int) or isinstance(etas_size, float): etas_size=[etas_size, etas_size]
+	#
+	print('ETAS_array, size: {}, shape: {}/{}'.format(ETAS_array.size, ETAS_array.shape, etas_size))
+	if not tuple(etas_size)==tuple(ETAS_array.shape):
+		# we're resizing and interpolating.
+		# note: i think an easier way to interpolate is to use PIL. load data into an "image" object img and use img.thumbnail(sz, opts...)
+		ETAS_array = interpolate_scipy(ETAS_array, etas_size, fignum=0, cmap='jet')
+		#print('New ETAS_array, size: {}, shape: {}'.format(ETAS_array.size, ETAS_array.shape))
+		#
+		lons = sorted(list(set([x for x,y,z in ETAS_array])))
+		lats = sorted(list(set([y for x,y,z in ETAS_array])))
+	if isinstance(gmp_size,int) or isinstance(gmp_size,float): gmp_size=[gmp_size*x for x in etas_size]
+	print('GMP_size: {}/{}'.format(gmp_size, etas_size))
+	#
+	ETAS_rec = np.core.records.fromarrays(zip(*ETAS_array), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+	#GMPE_rec = [[x,y,0] for x,y in itertools.product(numpy.linspace(min(lons), max(lons), gmp_size[0]), numpy.linspace(min(lats), max(lats), gmp_size[1]))]
+	#
+	ETAS_rec.dump('ETAS_rec.p')
+	#
+	# so what are the parameters? for now, assume we have a rectangular grid;
+	# define parameters from which to construct a GMPE array.
+	#d_lon = lons[1]-lons[0]
+	#d_lat = lats[1]-lats[0]		# maybe need something more robust than this, but it should do...
+	#lon_range = (min(lons), max(lons)+d_lon, d_lon)
+	#lat_range = (min(lats), max(lats)+d_lat, d_lat)
+	#
+	#d_lat_gmp = (max(lats)-min(lats))/gmp_size[1]
+	#d_lon_gmp = (max(lons)-min(lons))/gmp_size[0]
+	gmp_lat_range = (min(lats), max(lats), gmp_size[0])
+	gmp_lon_range = (min(lons), max(lons), gmp_size[1])
+	#
+	# Use observed earthquakes from the region to determine GR a and b values for rates.  Can specify b
+	print("Finding regional GR values")
+	bval, aval = regional_GR_rates(gmp_lon_range, gmp_lat_range, mc=4.5, date_range=['1990-1-1', None], b=1)
+	#
+	# Largest aftershock magnitude will be M_mainshock - Bath's constant 
+	#  (1.0, see "A modified form of Bath's law, scherbakov, turcotte 2004)
+	m_max = maxMag - 1.0
+	#
+	#t0 = time.time()
+	#
+	# Let's only use the top x% of ETAS cells as shaking sources. 
+	# The lowest rates will correspond to the highest magnitudes.
+	sorted_ETAS_rec = np.sort(ETAS_rec, order='z')
+	forCalc_ETAS_rec = sorted_ETAS_rec[-int(len(ETAS_rec)*percSource):]
+	l_etas = len(forCalc_ETAS_rec)
+	#
+	# now, we want both SPP and parallel options. SPP should be as much like MPP with one processor as possible, but avoiding the
+	# overhead of piping all the data back and forth.
+	#
+	m_reff=0.
+	#
+	if n_procs>1:
+		#
+		# multi-process.
+		P = mpp.Pool(n_procs)
+		#
+		#we want to construct the GMP_{sub}_arrays at the process level, so we don't have to pipe the whole array to the process.
+		# note: the [[x,y], ...] part of the array is like:
+		# [[x,y] for x,y in itertools.product(np.arange(*lon_range), np.arange(*lat_range))]
+		#
+		#
+		# so we'll need to write calc_gmps() (aka, copy the single process bit).
+		chunk_size = int(np.ceil(l_etas/n_procs))		# "chunk" size, or length of sub-arrays for parallel processing.
+		#
+		# pass part of ETAS; distribute and return a full GMPE_rec[] from each process.
+		#
+		#resultses = [P.apply_async(calc_max_GMPEs, (), {'ETAS_rec':ETAS_rec[j_p*chunk_size:(j_p+1)*chunk_size], 'lon_range':gmp_lon_range, 'lat_range':gmp_lat_range, 'm_reff':5.0, 'just_z':True}) for j_p in range(n_procs)]
+		#
+		resultses = [P.apply_async(calc_exceedance_intOverMag, (), {'ETAS_rec':forCalc_ETAS_rec[j_p*chunk_size:(j_p+1)*chunk_size], 'lon_range':gmp_lon_range, 'threshold':threshold, 'lat_range':gmp_lat_range, 'm_max':m_max, 'm_reff':0, 'just_z':True}) for j_p in range(n_procs)]
+		#
+		P.close()
+		P.join()
+		#
+		# not sure of this syntax just yet. it is admittedly a little bit convoluted. it might be better to just suck it up and
+		# do an extra loop through the array: set up the zero-value initial array, then add all the returns. here, we're trying to
+		# squeeze out a little bit of performance by setting up the array and the first results simultaneously.
+		#
+		#GMPE_rec = np.core.records.fromarrays(zip(*[[x,y,z] for (x,y),z in zip(itertools.product(np.arange(*lon_range), np.arange(*lat_range)), resultses[0].get())]), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+		GMPE_rec = np.core.records.fromarrays(zip(*[[x,y,z] for (x,y),z in zip(itertools.product(np.linspace(*gmp_lon_range), np.linspace(*gmp_lat_range)), resultses[0].get())]), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+		#
+		for j,res in enumerate(resultses[1:]):
+			GMPE_rec['z']+=np.array(res.get())
+			#GMPE_rec['z'] = [max(z0,z1) for z0,z1 in zip(GMPE_rec['z'], res.get())]
+			pass
+		#
+		# look in vc_parser for proper syntax using Pool() objects with close() and join().
+		# P.join()
+	#
+	if n_procs==1:
+		# there are different ways to calculate GMPE. just so we can get a number, let's just aggregate the output for now.
+		#GMPE_rec = calc_max_GMPEs(ETAS_rec=ETAS_rec, lat_range=gmp_lat_range, lon_range=gmp_lon_range, m_reff=5.0, just_z=False)
+		# Wilson: Uses forumlae for rate of exceedence of a threshold acceleration, by default we use 0.2g 
+		GMPE_rec = calc_exceedance_intOverMag(ETAS_mag_rec=forCalc_ETAS_rec, threshold=threshold, m_max=m_max, lon_range=gmp_lon_range, lat_range=gmp_lat_range)
+	#
+	#t1 = time.time()
+	#print(t1 - t0)
+	#
+	if not (fname_out is None):
+		# export the pickle object:
+		#GMPE_rec.dump(fname_out)
+		GMPE_rec.dump('{}.pkl'.format(os.path.splitext(fname_out)[0]))
+		#
+		# and an xyz:
+		with open('{}.xyz'.format(os.path.splitext(fname_out)[0]), 'w') as f:
+			f.write('#xyz export of GMPE\n')
+			f.write('#!{}\n'.format('\t'.join(GMPE_rec.dtype.names)))
+			for rw in GMPE_rec:
+				f.write('{}\n'.format('\t'.join((str(x) for x in rw))))
+			#
+		#
+	#
+	#GMPE_rec.sort(order=('x','y'))
+	#plot_xyz_image(GMPE_rec, fignum=4, cmap='hot')
+	#
+	print('Elapsed time: ', time.time()-t_test_0)
+	if fignum!=None:
+		plt.figure(fignum+1)
+		plt.clf()
+		plot_xyz_image(GMPE_rec, fignum=fignum+1, logz=False, cmap='jet')
+		plt.title('Shaking rates')
+		#
+		if not (fname_out is None):
+			fout_png = '{}.png'.format(os.path.splitext(fname_out)[0])
+			print('saving image to: {}'.format(fout_png))
+			plt.savefig(fout_png)
+		
+	
+	return GMPE_rec
+#
+#
 def calc_max_GMPEs(ETAS_rec=None, lat_range=None, lon_range=None, mc=2.5, m_reff=5.0, motion_type="PGA-soil", just_z=False):
 	# what is the correct syntax to return a subset of columns of a recarray? (the fastest way, of course)?
 	#
@@ -298,7 +502,7 @@ def calc_max_GMPEs(ETAS_rec=None, lat_range=None, lon_range=None, mc=2.5, m_reff
 		#	
 		#S_Horiz_Soil_Acc = Y(distance, M, "PGA-soil")
 		
-		S_Horiz_Soil_Acc = f_Y(R=distance, M=M, motion_type=motion_type)
+		S_Horiz_Soil_Acc = f_Y(M=M, R=distance, motion_type=motion_type)
 		#S_Horiz_Soil_Acc = M/distance
 		#
 		GMPE_rec['z'][k] = max(z_g, S_Horiz_Soil_Acc)
@@ -328,7 +532,7 @@ def calc_GMPEs_exceedance(ETAS_mag_rec=None, rates_array=None, lon_range=None, l
 	for (j, (lon1, lat1, z_em)), (k, (lon2, lat2, z_g)) in itertools.product(enumerate(ETAS_mag_rec), enumerate(GMPE_rec)):
 		# M=rate_to_m(z_e)
 		if j!=j_prev:
-			#print('new row[{}]: {}/{}'.format(os.getpid(), j,k))
+			print('new source[{}]: {}/{}'.format(os.getpid(), j, len(ETAS_mag_rec)))
 			j_prev=j
 		#
 		#M = etas_to_mag(z_e, area=d_lat*d_lon*math.cos(lat1*math.pi/180.)*111.1*111.1, t0=3600., t1=0., t2=30.*24.*3600., p=1.05, dm=1.0, mc=2.5)
@@ -342,7 +546,7 @@ def calc_GMPEs_exceedance(ETAS_mag_rec=None, rates_array=None, lon_range=None, l
 		distance = spherical_dist(lon_lat_from=[lon1, lat1], lon_lat_to=[lon2, lat2])
 		#
 		# 
-		S_Horiz_Soil_Acc = f_Y(distance, M+m_reff, motion_type)
+		S_Horiz_Soil_Acc = f_Y(M+m_reff, distance, motion_type)
 		#
 		# ... and i think this is killing us performance-wise. is there a shortcut?
 		#
@@ -362,15 +566,99 @@ def calc_GMPEs_exceedance(ETAS_mag_rec=None, rates_array=None, lon_range=None, l
 	else:
 		return GMPE_rec
 #
+#
+def calc_exceedance_intOverMag(ETAS_rec=None, lon_range=None, lat_range=None, m_reff=0., mc=2.5, m_max=np.inf, threshold= 0.2, motion_type="PGA-soil", just_z=False):
+	#
+	# construct GMP array and calculate GM from ETAS. this function to be used as an mpp.Pool() worker.
+	#GMPE_rec =[[x,y,0.] for x,y in itertools.product(np.arange(*lon_range), np.arange(*lat_range))]	# check these for proper
+	#
+	# create an empty GMPE array.																		# sequenceing and grouping.
+	#GMPE_rec = np.core.records.fromarrays(zip(*[[x,y,0.] for x,y in itertools.product(np.arange(*lon_range), np.arange(*lat_range))]), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+	
+	# Here we pre-calculate the integration over all magnitudes (which gives the exceedance contribution between
+	#  two cells) for the whole range of possible distances, and then create a numpy interpolated function 
+	#  out of the results.  Still have to multiply the result by the ETAS value of the source cell. No more integrating for every pair of cells!
+	max_distance = spherical_dist(lon_lat_from=[lon_range[0], lat_range[0]], lon_lat_to=[lon_range[1], lat_range[1]])
+	radii = np.concatenate((np.linspace(0, 100, 2000), np.linspace(101, max_distance+50, 50)))
+	b=1.0
+	integrated_reference = np.zeros(len(radii))
+	for i, R in enumerate(radii):
+		integrated_reference[i] = quad(magIntegrand_improved(R, mc, m_max, b, threshold), mc, m_max)[0]
+	magInt_integral_result_function = interp1d(radii, integrated_reference, kind='cubic')
+	
+	
+	GMPE_rec = np.core.records.fromarrays(zip(*[[x,y,0.] for x,y in itertools.product(np.linspace(*lon_range), np.linspace(*lat_range))]), dtype = [('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+	#
+	#d_lat = (lat_range[1]-lat_range[0])/lat_range[2]
+	#d_lon = (lon_range[1]-lon_range[0])/lon_range[2]
+	#
+	j_prev=-1
+	for (j, (lon1, lat1, z_en)), (k, (lon2, lat2, z_g)) in itertools.product(enumerate(ETAS_rec), enumerate(GMPE_rec)):
+		# M=rate_to_m(z_e)
+		if j!=j_prev and j%100==0:
+			print('new source[{}]: {}/{}'.format(os.getpid(), j, len(ETAS_rec)))
+			j_prev=j
+		#
+		# yoder: i think it will make more sense to calculate the magnitude and rate separately, since we're given the rate-density.
+		# moreover, i think we can interpret this as an excedence probabiltiy density, but the will be more to work out for that...
+		ETAS_n = z_en
+		#
+		distance = spherical_dist(lon_lat_from=[lon1, lat1], lon_lat_to=[lon2, lat2])
+		#
+		# Integrate over all magnitudes, returns the full exceedance contribution from cell j to cell k
+		rate_exceed_mag_integral_result = ETAS_n*magInt_integral_result_function(distance)
+		#
+		GMPE_rec['z'][k] += rate_exceed_mag_integral_result
+		
+	# TODO: Wilson: To turn this rate of exceedance into a probability of exceedance over a time interval, plug this rate into eg Poissonian 1-exp(-Rate*Time)
+	#print('finished with GMPE_rec, len={}'.format(len(GMPE_rec)))
+	if just_z:
+		return GMPE_rec['z']
+	else:
+		return GMPE_rec
+#
+#
+def magIntegrand(M, R, ETAS_n, mc, m_max, b, threshold, motion_type):
+    
+    N_M    = GR_num_density(M, ETAS_n, mc, m_max, b)
+    this_Y = f_Y(M, R, motion_type)
+    P_M    = int_log_norm(this_Y, threshold*980.665, motion_type)
+    
+    return P_M * N_M
+
+def magIntegrand_improved(R, mc, m_max, b, threshold, motion_type='PGA-soil'):
+    # This is everything to get exceedance contribution between two points EXCEPT the source ETAS number.  That needs to be
+	# multiplied in front of what this returns
+    GR_number_prefactor = b*np.log(10)/(10**(-b*mc)-10**(-b*m_max))
+    threshold = np.log10(threshold*980.665)
+    
+    def f(M):
+        return (GR_number_prefactor*10**(-b*M))*(0.5*(1+erf(-(threshold-f_lY(M, R, motion_type))/(np.sqrt(2)*motion_type_prams[motion_type]['sig']))))
+    
+    return f
+
+#
+#
+def GR_num_density(M, ETAS_n, mc, m_max, b):
+    return ETAS_n/(10**(-b*mc)-10**(-b*m_max))* b * np.log(10)*10**(b*(-M))
+#
+#
 #@numba.jit
-def f_Y(R,M, a=None, b=None, c1=None, c2=None, d=None, e=None, sig=None, motion_type='PGA-soil'):
+def f_Y(M, R, a=None, b=None, c1=None, c2=None, d=None, e=None, sig=None, motion_type='PGA-soil'):
 	# experimenting a bit with this quasi-recursive call structure. this approach might be slow, and maybe we should just separate this into
 	# two separate functions.
 	if motion_type!=None:
-		return f_Y(R,M, motion_type=None, **motion_type_prams[motion_type])
+		return f_Y(M, R, motion_type=None, **motion_type_prams[motion_type])
 	else:
 		return 10**(a*M + b*(np.sqrt(R**2+9) + C(M, c1, c2)) + d*np.log10(np.sqrt(R**2+9) + C(M, c1, c2)) + e)
-		#return (a*M + b*(np.sqrt(R**2+9) + C(M, c1, c2)) + d*np.log10(np.sqrt(R**2+9) + C(M, c1, c2)) + e)
+#
+def f_lY(M, R, a=None, b=None, c1=None, c2=None, d=None, e=None, sig=None, motion_type='PGA-soil'):
+	# experimenting a bit with this quasi-recursive call structure. this approach might be slow, and maybe we should just separate this into
+	# two separate functions.
+	if motion_type!=None:
+		return f_lY(M, R, motion_type=None, **motion_type_prams[motion_type])
+	else:
+		return (a*M + b*(np.sqrt(R**2+9) + C(M, c1, c2)) + d*np.log10(np.sqrt(R**2+9) + C(M, c1, c2)) + e)
 #@numba.jit
 def C(M, c1, c2):
     return c1*np.exp(c2*(M-5))*(np.arctan(M-5)+np.pi/2.0)
@@ -436,6 +724,7 @@ def etas_rate_density_to_mag_t0(z_etas_log, mc, lt0=5, D=1.5, b=1.0, dm_bath=1.0
 #@numba.jit
 def etas_rate_density_to_target_mag(z_etas_log, mc=2.5, targetMaxMag = 7.0, D=1.5, b=1.0, dm_bath=1.0, d_lambda=1.76, d_tau=2.3, p=1.1, q=1.5):
 	#Same as etas_rate_density_to_mag_t0, but a target maximum magnitude is specified, and an appropriate log(t0) is used
+    # z_etas_log must be an iterable; the highest value will be converted to target mag, and smaller ones will 
 	
 	lt0 =  -(max(z_etas_log) + dm_bath*(D/(2+D) + 2*b) + mc*(D/(2+D) + 2*b) - (numpy.log10((p-1)/(numpy.pi*(q-1))) + d_lambda + (2/(2+D))*numpy.log10((2+D)/2) ) - targetMaxMag * ((D/(2+D)) + 2*b - .5))
 	
@@ -490,6 +779,8 @@ def regional_GR_rates(lon_bounds, lat_bounds, mc=4.5, date_range=['1990-1-1', No
 #
 def GR_fit(x, b, a):
 	return -b*x + a
+#
+
 #
 def int_log_norm(Y, threshold, motion_type):
 	result = quad(normal_integrand, np.log10(threshold), np.inf, args=(np.log10(Y), motion_type_prams[motion_type]['sig']))
@@ -651,7 +942,7 @@ def calc_GMPE(lon1, lat1, lon2, lat2, z_etas, m_reff):
 	#g = Geodesic.WGS84.Inverse(lat1, lon1, lat2, lon2)
 	#distance = g['s12']
 	#	
-	S_Horiz_Soil_Acc = f_Y(distance, M, motion_type)
+	S_Horiz_Soil_Acc = f_Y(M, distance, motion_type)
 	GMPE_rec['z'][k] = max(GMPE_rec['z'][k], S_Horiz_Soil_Acc)
 
 def m_from_rate(rate=None, m_reff=0.):
@@ -750,20 +1041,36 @@ if __name__=='__main__':
 			pargs+=[arg]
 		#
 	#
+	regind = 1
+	regions = ['nepal', 'kumamoto']
+	region = regions[regind]
+	timeInt = 1
+	
 	# enforce float types:
 	#kwds = {key:float(val) for key,val in kwds.items()}
 	#pargs = [float(x) for x in pargs]
 	#
-	kwds['etas_src']='etas_src/etas_nepal_2015_04_2016-11-12_11:02:56+00:00.xyz'#'etas_src/kyushu_immediate2016-06-19_20:48:43_528251+00:00_xyz.xyz'
-	kwds['fname_out']='pickles/GMPE_nepal.p'
-	kwds['maxMag'] = 7.0
+	if region == 'nepal':
+		kwds['etas_src']='/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_tInt_etas_2015-04-25 06:13:00+00:00/etas_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz'
+		kwds['maxMag'] = 7.8			  # Mainshock magnitude of this analysis
+	if region == 'kumamoto':
+		kwds['etas_src']= '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/kumamoto_tInt_etas_2016-04-15 16:30:00+00:00/etas_tInt_kumamoto_2015_04_2016-04-15_16:30:00+00:00.xyz'
+		kwds['maxMag'] = 7.0			  # Mainshock magnitude of this analysis
+	
 	kwds['threshold'] = 0.2          # acceleration in g
-	kwds['percSource'] = 0.33        # top fraction of ETAS bins to use as shaking sources
-	kwds['year_fraction'] = 1.0/12.0 # fraction of year for which to predict exceedances
-	kwds['fignum']=0                 # start counting figures
-	kwds['n_procs']=3                # number of processors to use
-	#	
-	X=etas_to_GM(*pargs, **kwds)
+	kwds['percSource'] = 1.0         # top fraction of ETAS bins to use as shaking sources
+	kwds['fignum'] = 0               # start counting figures
+	kwds['n_procs'] = 4              # number of processors to use
+	#
+	if timeInt:
+		kwds['fname_out']='pickles/{}_GMPE_magInt_test_percSource{}'.format(region, str(kwds['percSource']).replace('.', '-'))
+		X = etas2gm_intOverMag(*pargs, **kwds)
+	else:
+		kwds['fname_out']='pickles/{}_GMPE_etasInv_percSource{}'.format(region, str(kwds['percSource']).replace('.', '-'))
+		kwds['do_logz'] = False          # convert input ETAS to log10(ETAS).  Only for etas2gm_invertETAS
+		kwds['year_fraction'] = 1.0/12.0 # fraction of year for which to predict exceedances, only used to etas2gm_invertETAS
+		X = etas2gm_invertETAS(*pargs, **kwds)
+		
 else:
 	plt.ion()
 	pass

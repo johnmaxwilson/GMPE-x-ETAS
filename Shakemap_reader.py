@@ -78,7 +78,7 @@ def basemapPGAPlot(lons, lats, pga):
     cb.set_label("Peak Ground Acceleration (% g)")
     m.show()
 
-def open_xyz_file(fname='etas_src/etas_japan2016_20160415_2300CDT_kml_xyz.xyz'):
+def open_xyz_file(fname=None):
 	with open(fname, 'r') as xyz:
 		return np.core.records.fromarrays(zip(*[[float(x) for x in rw.split()] for rw in xyz if not rw[0] in ('#', chr(32), chr(10), chr(13), chr(9))]), dtype=[('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
 
@@ -90,7 +90,7 @@ def exceedanceMap(shake_dir, gmpe_file = 'pickles/GMPE_rec.p', shake_threshold =
     # Get file paths for the ShakeMap files
     filepaths = []
     for filename in os.listdir(shake_dir):
-        if filename.endswith(".xyz"):
+        if filename.endswith(".xyz") and "_01_" not in filename:
             filepaths.append(os.path.join(shake_dir, filename))
             continue
         else:
@@ -220,11 +220,13 @@ if __name__ == '__main__':
     
     exceed_rec = exceedanceMap(**kwds)
     
-    plot_xyz_image(exceed_rec, logz=False)
-    
-    
-    
-    
+    plot_xyz_image(exceed_rec, logz=False, fignum=2)
+
+#    predict_exceed_rec = np.load("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/nepal_GMPE_array.p")
+#    plot_xyz_image(predict_exceed_rec, logz=False, fignum=2)
+
+#    aftershock_number = np.load("/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_Aftershock_num_rec.p")
+#    plot_xyz_image(aftershock_number, logz=False)
     
     
     
