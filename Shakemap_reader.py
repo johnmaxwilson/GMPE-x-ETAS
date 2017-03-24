@@ -27,6 +27,7 @@ class ShakingExceedanceVerifier:
         """
         self.shake_dir                   = shake_dir
         self.shake_threshold             = shake_threshold
+        self.have_made_obs_rec             = False
         
         # Load all ShakeMap data, create rTrees of observed exceedance values
         if shake_rtrees_pickle==None:
@@ -51,7 +52,7 @@ class ShakingExceedanceVerifier:
                 continue 
         
         self.exceed_rtrees = []
-        for filepath in shakemap_filepaths:
+        for j, filepath in enumerate(shakemap_filepaths):
             thislonlats, thispga = self.read_shakemap(filepath)
             
             thislons = np.unique(thislonlats[:,0])
@@ -75,7 +76,7 @@ class ShakingExceedanceVerifier:
                     this_rtrindex.insert(i, (coord[0]-dlon/2, coord[1]-dlat/2, coord[0]+dlon/2, coord[1]+dlat/2), obj=0)
             
             self.exceed_rtrees.append(this_rtrindex)
-            print("Made exceedance rTree for ", filepath.split('/')[-1])
+            print("Made rTree for {}, {}/{}".format(filepath.split('/')[-1], j+1, len(shakemap_filepaths)))
 
         return
 
@@ -87,12 +88,12 @@ class ShakingExceedanceVerifier:
         lonlats = []
         pga = []
         with open(file_path, "r") as gridfile:
-            gridfile.readline()
+            gridfile.readline() #skip the header
             for line in gridfile:
                 line = line.split()
                 lonlats.append([float(line[0]), float(line[1])])
-                pga.append(float(line[2])*100) #pga in file given in %g, we want g
-        
+                pga.append(float(line[2])/100.0) #pga in file given in %g, we want g
+                
         return np.array(lonlats), np.array(pga)
 
     
@@ -102,13 +103,19 @@ class ShakingExceedanceVerifier:
         """
         #self.gmpe_file_path = gmpe_file_path
         self.forecast_scaling_multiplier = forecast_scaling_multiplier
+        
         # Load the GMPE rec array
         self.gmpe_rec = np.load(gmpe_file_path)
         print("Loaded GMPE rec")
         
-        # Make an observed exceedence array that matches the grid of GMPE rec
-        self.obs_exceedance_rec, self.valid_data_mask = self.sample_matching_obs_data(self.gmpe_rec)
-        print("Created observed exceedance array")
+        # Use an the existing obs_exceedance_rec if the gmpe grids are the same
+        if self.have_made_obs_rec:
+            if (self.lons_gmpe==np.unique(self.gmpe_rec['x']) and self.lats_gmpe==np.unique(self.gmpe_rec['y'])):
+                print("GMPE on same grid, using existing observed array")
+        else:
+            # Make an observed exceedence array that matches the grid of GMPE rec
+            self.obs_exceedance_rec, self.valid_data_mask = self.sample_matching_obs_data(self.gmpe_rec)
+            print("Created observed exceedance array")
         
         # Do the actual verification
         self.gmss_verification()
@@ -121,10 +128,10 @@ class ShakingExceedanceVerifier:
         Create an observed exceedence array that matches the grid of GMPE rec,
         as well as a mask for cells with no matching observation
         """
-        lons_gmpe = np.unique(gmpe_rec['x'])
-        lats_gmpe = np.unique(gmpe_rec['y'])
-        dlon_gmpe = lons_gmpe[1]-lons_gmpe[0]
-        dlat_gmpe = lats_gmpe[1]-lats_gmpe[0]
+        self.lons_gmpe = np.unique(gmpe_rec['x'])
+        self.lats_gmpe = np.unique(gmpe_rec['y'])
+        dlon_gmpe = self.lons_gmpe[1]-self.lons_gmpe[0]
+        dlat_gmpe = self.lats_gmpe[1]-self.lats_gmpe[0]
         
         obs_exceedance_rec = np.copy(gmpe_rec)
         obs_exceedance_rec['z'] = np.zeros_like(gmpe_rec['z'], dtype=int)
@@ -137,8 +144,9 @@ class ShakingExceedanceVerifier:
                     cell['z'] += max(contained_exceeds)
                     valid_data_mask[i] = (False)
                 
-            print('Searched '+str(j+1)+'/'+str(len(self.exceed_rtrees)))
+            print('Searched '+str(j+1)+'/'+str(len(self.exceed_rtrees))+' rTrees')
         
+        self.created_obs_rec = True
         return obs_exceedance_rec, np.array(valid_data_mask)
     
     
@@ -320,11 +328,11 @@ if __name__ == '__main__':
     scaling_multiplier = 20
     
     
-    nepal_verifier = ShakingExceedanceVerifier(*pargs, **kwargs)
-    
-    nepal_verifier.verify_GMPE(gmpe_file_path, scaling_multiplier)
-    
-    print("Score: ", nepal_verifier.score)
+#    nepal_verifier = ShakingExceedanceVerifier(*pargs, **kwargs)
+#    
+#    nepal_verifier.verify_GMPE(gmpe_file_path, scaling_multiplier)
+#    
+#    print("Score: {:0.4f}".format(nepal_verifier.score))
     
     plot_xyz_image(nepal_verifier.obs_exceedance_rec, logz=False, fignum=2)
 
@@ -332,9 +340,9 @@ if __name__ == '__main__':
 #    plot_xyz_image(aftershock_number, logz=False, fignum=3)
 #
 #
-#    predict_exceed_rec = open_xyz_file("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/pickles/nepal_GMPE_magInt_nfcorrection_percSource1-0.xyz")
-#    predict_exceed_rec['z'] = np.round(predict_exceed_rec['z']*20)
-#    plot_xyz_image(predict_exceed_rec, logz=False, fignum=4)
+    predict_exceed_rec = open_xyz_file("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/pickles/nepal_GMPE_magInt_nfcorrection_percSource1-0.xyz")
+    predict_exceed_rec['z'] = np.round(predict_exceed_rec['z']*20)
+    plot_xyz_image(predict_exceed_rec, logz=False, fignum=4)
 
     
     
