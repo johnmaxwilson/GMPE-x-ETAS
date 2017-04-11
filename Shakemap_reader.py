@@ -341,6 +341,7 @@ if __name__ == '__main__':
             pargs+=[arg]
     
     
+     #            0         1        2          3            4           5          6         7        8
     regions = ['nepal', 'chile', 'sichuan', 'tohoku', 'newzealand', 'sumatra', 'iquique', 'swnz', 'hokkaido']
     regind = 1
     region = regions[regind]

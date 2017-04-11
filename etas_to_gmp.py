@@ -1084,7 +1084,7 @@ if __name__=='__main__':
         kwds['maxMag'] = 7.8         # Mainshock magnitude of this analysis
         if bTimeInt:
             etas_subfolder = 'nepal_tInt_etas_2015-04-25 06:13:00+00:00'
-            abrat_list = [1.5]
+            abrat_list = [3.0, 3.5, 4.0]
         else:
             kwds['etas_src'] = os.path.join(etas_source_dir, 'nepal_rateden_etas_2015-04-25 06:13:00+00:00/etas_nepal.xyz')
             kwds['fname_out']= os.path.join(gmpe_output_dir, '{}_GMPE_magInv_percSource{}'.format(region, str(kwds['percSource']).replace('.', '-')))
