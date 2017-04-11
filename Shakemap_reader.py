@@ -13,6 +13,9 @@ from rtree import index
 import os
 import sys
 import itertools
+from xml.etree import ElementTree
+import scipy.optimize as opt
+from scipy.interpolate import interp1d
 
 
 class ShakingExceedanceVerifier:
@@ -20,21 +23,18 @@ class ShakingExceedanceVerifier:
     Read in GMPE array and ShakeMap data, make shakemaps exceedance array of
     same shape as GMPE array, then verify forecast
     """    
-    def __init__(self, shake_dir, shake_threshold=0.2, shake_rtrees_pickle=None):
+    def __init__(self, shake_dir, shake_threshold=0.2):
         """
         Read in GMPE array and ShakeMap data, make shakemaps exceedance array of
         same shape as GMPE array, then verify forecast
         """
         self.shake_dir                   = shake_dir
         self.shake_threshold             = shake_threshold
-        self.have_made_obs_rec             = False
+        self.have_made_obs_rec           = False
+        self.have_loaded_gmpe            = False
         
         # Load all ShakeMap data, create rTrees of observed exceedance values
-        if shake_rtrees_pickle==None:
-            self.calc_exceedance_from_shakemaps()
-        else:
-            try: self.exceed_rtrees = np.load(shake_rtrees_pickle)
-            except: self.calc_exceedance_from_shakemaps()
+        self.calc_exceedance_from_shakemaps()
         
         
     def calc_exceedance_from_shakemaps(self):
@@ -45,7 +45,7 @@ class ShakingExceedanceVerifier:
         # Get file paths for the ShakeMap files
         shakemap_filepaths = []
         for filename in os.listdir(self.shake_dir):
-            if filename.endswith(".xyz") and "_01_" not in filename:
+            if (filename.endswith(".xyz") or filename.endswith(".xml")) and "_01_" not in filename:
                 shakemap_filepaths.append(os.path.join(self.shake_dir, filename))
                 continue
             else:
@@ -53,8 +53,10 @@ class ShakingExceedanceVerifier:
         
         self.exceed_rtrees = []
         for j, filepath in enumerate(shakemap_filepaths):
-            thislonlats, thispga = self.read_shakemap(filepath)
-            
+            if filepath.endswith(".xyz"):
+                thislonlats, thispga = self.read_shakemap_xyz(filepath)
+            elif filepath.endswith(".xml"):
+                thislonlats, thispga = self.read_shakemap_xml(filepath)
             thislons = np.unique(thislonlats[:,0])
             thislats = np.unique(thislonlats[:,1])
             dlon = thislons[1]-thislons[0]
@@ -78,12 +80,10 @@ class ShakingExceedanceVerifier:
             self.exceed_rtrees.append(this_rtrindex)
             print("Made rTree for {}, {}/{}".format(filepath.split('/')[-1], j+1, len(shakemap_filepaths)))
 
-        return
 
-
-    def read_shakemap(self, file_path):
+    def read_shakemap_xyz(self, file_path):
         """
-        Read USGS PGA ShakeMap file
+        Read USGS PGA ShakeMap xyz text file
         """
         lonlats = []
         pga = []
@@ -95,23 +95,44 @@ class ShakingExceedanceVerifier:
                 pga.append(float(line[2])/100.0) #pga in file given in %g, we want g
                 
         return np.array(lonlats), np.array(pga)
-
+    
+    
+    def read_shakemap_xml(self, file_path):
+        """
+        Read USGS PGA ShakeMap xml file
+        """
+        lonlats = []
+        pga = []
+        
+        etree = ElementTree.parse(file_path).getroot()
+        
+        for line in etree.getchildren()[-1].text.splitlines()[1:]:
+            line = line.split()
+            lonlats.append([float(line[0]), float(line[1])])
+            pga.append(float(line[2])/100.0) #pga in file given in %g, we want g
+                
+        return np.array(lonlats), np.array(pga)
+    
     
     def verify_GMPE(self, gmpe_file_path, forecast_scaling_multiplier=1):
         """
         Perform all the verification tasks.
         """
-        #self.gmpe_file_path = gmpe_file_path
         self.forecast_scaling_multiplier = forecast_scaling_multiplier
         
-        # Load the GMPE rec array
-        self.gmpe_rec = np.load(gmpe_file_path)
-        print("Loaded GMPE rec")
+        # Use existing gmpe_rec if it's already loaded
+        if self.have_loaded_gmpe and self.gmpe_file_path == gmpe_file_path:
+            pass #Use the already-loaded file
+        else:
+            self.gmpe_file_path = gmpe_file_path
+            # Load the GMPE rec array
+            self.gmpe_rec = np.load(gmpe_file_path)
+            self.have_loaded_gmpe = True
+            print("Loaded GMPE array")
         
         # Use an the existing obs_exceedance_rec if the gmpe grids are the same
-        if self.have_made_obs_rec:
-            if (self.lons_gmpe==np.unique(self.gmpe_rec['x']) and self.lats_gmpe==np.unique(self.gmpe_rec['y'])):
-                print("GMPE on same grid, using existing observed array")
+        if self.have_made_obs_rec and (self.lons_gmpe==np.unique(self.gmpe_rec['x'])).all() and (self.lats_gmpe==np.unique(self.gmpe_rec['y'])).all():
+            pass #Use existing observed array
         else:
             # Make an observed exceedence array that matches the grid of GMPE rec
             self.obs_exceedance_rec, self.valid_data_mask = self.sample_matching_obs_data(self.gmpe_rec)
@@ -119,8 +140,7 @@ class ShakingExceedanceVerifier:
         
         # Do the actual verification
         self.gmss_verification()
-        
-        return
+        return self.score
     
     
     def sample_matching_obs_data(self, gmpe_rec):
@@ -146,7 +166,7 @@ class ShakingExceedanceVerifier:
                 
             print('Searched '+str(j+1)+'/'+str(len(self.exceed_rtrees))+' rTrees')
         
-        self.created_obs_rec = True
+        self.have_made_obs_rec = True
         return obs_exceedance_rec, np.array(valid_data_mask)
     
     
@@ -161,27 +181,29 @@ class ShakingExceedanceVerifier:
         self.s_scoring = self.gerrity_score_calc(self.p_contingency)
         
         self.score = np.sum(self.p_contingency*self.s_scoring)
-        return
     
     
     def p_contingency_calc(self):
         """
         Calculate contingency table for our GMPE forecast against observed shaking data
         """
-        max_obs_exceedance_number = max(self.obs_exceedance_rec['z'])
-        p_contingency = np.zeros((int(max_obs_exceedance_number+1), int(max_obs_exceedance_number+1)))
-        
         obs_exceedance_array_valid = self.obs_exceedance_rec['z'][~self.valid_data_mask]
         gmpe_array_valid = self.gmpe_rec['z'][~self.valid_data_mask]
+        # Need to forecast integer values of exceedance, scaled by external multiplier
+        gmpe_array_valid = np.round(gmpe_array_valid*self.forecast_scaling_multiplier)    
         
-        for forecast_value, observed_value in zip(gmpe_array_valid, obs_exceedance_array_valid):
-            # Need to forecast integer values of exceedance, scaled by external multiplier
-            forecast_value = round(forecast_value*self.forecast_scaling_multiplier)
-            
+        max_obs_exceedance_number = max(obs_exceedance_array_valid)
+        p_contingency = np.zeros((int(max_obs_exceedance_number+1), int(max_obs_exceedance_number+1)))
+        
+        for forecast_value, observed_value in zip(gmpe_array_valid, obs_exceedance_array_valid):            
             # We're taking advantage of the fact that these exceedance categories
-            # correspond to indeces of our matrix
-            p_contingency[int(forecast_value), int(observed_value)] += 1
-        
+            # correspond to indeces of our matrix.  An IndexError will occur when
+            # the forecast value is greater than the largest observed exceedance number,
+            # so the point should go to the largest category.
+            try:
+                p_contingency[int(forecast_value), int(observed_value)] += 1
+            except IndexError:
+                p_contingency[int(max_obs_exceedance_number), int(observed_value)] += 1
         
         p_contingency = p_contingency/np.sum(p_contingency)
         
@@ -201,12 +223,11 @@ class ShakingExceedanceVerifier:
         K = len(p_obs)
         
         if K==1:
-            print("Only one observed category!")
+#            print("Only one category!")
             return s_scoring
         
         # Calculate the a_r values of Gerrity method
-        for i in range(K-1):
-            a_list = (1-np.cumsum(p_obs[:-1]))/(np.cumsum(p_obs[:-1]))
+        a_list = (1-np.cumsum(p_obs[:-1]))/(np.cumsum(p_obs[:-1]))
                 
         # Now calculate each element of the scoring matrix
         b = 1./(K-1)
@@ -255,55 +276,54 @@ def basemapPGAPlot(lons, lats, pga):
 
 
 def open_xyz_file(fname=None):
-	with open(fname, 'r') as xyz:
-		return np.core.records.fromarrays(zip(*[[float(x) for x in rw.split()] for rw in xyz if not rw[0] in ('#', chr(32), chr(10), chr(13), chr(9))]), dtype=[('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
+    with open(fname, 'r') as xyz:
+        return np.core.records.fromarrays(zip(*[[float(x) for x in rw.split()] for rw in xyz if not rw[0] in ('#', chr(32), chr(10), chr(13), chr(9))]), dtype=[('x', '>f8'), ('y', '>f8'), ('z', '>f8')])
     
-def plot_xyz_image(xyz, fignum=0, logz=True, needTranspose=False, interp_type='nearest', cmap='jet', do_map=True):
-	#
-	if not hasattr(xyz, 'dtype'):
-		xyz = numpy.core.records.fromarrays(zip(*xyz), dtype=[('x','>f8'), ('y','>f8'), ('z','>f8')])
-	#
-	xyz.sort(order='x')
-	xyz.sort(order='y')
-	X = sorted(list(set(xyz['x'])))
-	Y = sorted(list(set(xyz['y'])))
-	mgx, mgy = np.meshgrid(X, Y)
-	print("len(X) = "+str(len(X)))
-	print("len(Y) = "+str(len(Y)))
-	print("Total size = "+str(len(xyz)))
-	#
+def plot_xyz_image(xyz, fignum=0, logz=True, needTranspose=False, interp_type='nearest', cmap='jet', do_map=True, colorbounds=None):
+    #
+    if not hasattr(xyz, 'dtype'):
+        xyz = numpy.core.records.fromarrays(zip(*xyz), dtype=[('x','>f8'), ('y','>f8'), ('z','>f8')])
+    #
+    xyz.sort(order='x')
+    xyz.sort(order='y')
+    X = sorted(list(set(xyz['x'])))
+    Y = sorted(list(set(xyz['y'])))
+    mgx, mgy = np.meshgrid(X, Y)
+    print("len(X) = "+str(len(X)))
+    print("len(Y) = "+str(len(Y)))
+    print("Total size = "+str(len(xyz)))
+    #
 
-	if logz: zz=numpy.log(xyz['z'].copy())
-	else: zz=xyz['z'].copy()
-	#zz.shape=(len(Y), len(X))
-	if needTranspose==True:
-		zz.shape=(len(X), len(Y))
-		zz = zz.T
-	else:
-		zz.shape=(len(Y), len(X))
-	#
-	
-	plt.figure(fignum)
-	plt.clf()
-	#plt.imshow(numpy.flipud(zz.transpose()), interpolation=interp_type, cmap=cmap)
-	#plt.colorbar()
-	#
-	if do_map:
-		m = Basemap(projection='cyl', llcrnrlat=min(Y), urcrnrlat=max(Y), llcrnrlon=min(X), urcrnrlon=max(X), resolution='i')
-		m.drawcoastlines()
-		m.drawmapboundary()#fill_color='PaleTurquoise')
-		#m.fillcontinents(color='lemonchiffon',lake_color='PaleTurquoise', zorder=0)
-		m.drawstates()
-		m.drawcountries()
-		m.pcolor(mgx, mgy, zz, cmap=cmap)
-	plt.colorbar()
-	
-	#plt.figure(fignum)
-	#plt.clf()
-	#plt.imshow(zz, interpolation=interp_type, cmap=cmap)
-	#plt.colorbar()    
+    if logz: zz=numpy.log(xyz['z'].copy())
+    else: zz=xyz['z'].copy()
+    #zz.shape=(len(Y), len(X))
+    if needTranspose==True:
+        zz.shape=(len(X), len(Y))
+        zz = zz.T
+    else:
+        zz.shape=(len(Y), len(X))
+    #
+    if colorbounds==None:
+        colorbounds = [zz.min(), zz.max()]
+    plt.figure(fignum)
+    plt.clf()
+    #plt.imshow(numpy.flipud(zz.transpose()), interpolation=interp_type, cmap=cmap)
+    #plt.colorbar()
+    #
+    if do_map:
+        m = Basemap(projection='cyl', llcrnrlat=min(Y), urcrnrlat=max(Y), llcrnrlon=min(X), urcrnrlon=max(X), resolution='i')
+        m.drawcoastlines()
+        m.drawmapboundary()#fill_color='PaleTurquoise')
+        #m.fillcontinents(color='lemonchiffon',lake_color='PaleTurquoise', zorder=0)
+        m.drawstates()
+        m.drawcountries()
+        m.pcolor(mgx, mgy, zz, cmap=cmap, vmin=colorbounds[0], vmax=colorbounds[1])
+    plt.colorbar()
     
-    
+    #plt.figure(fignum)
+    #plt.clf()
+    #plt.imshow(zz, interpolation=interp_type, cmap=cmap)
+    #plt.colorbar()
     
     
 if __name__ == '__main__':
@@ -320,29 +340,85 @@ if __name__ == '__main__':
         else:
             pargs+=[arg]
     
-    kwargs['shake_dir'] = "/home/jmwilson/Desktop/ShakeMaps/nepal_shakemaps/"
+    
+    regions = ['nepal', 'chile', 'sichuan', 'tohoku', 'newzealand', 'sumatra', 'iquique', 'swnz', 'hokkaido']
+    regind = 1
+    region = regions[regind]
+    
+    abrat_lists = {'nepal':[1.5, 1.75, 2.0, 2.25, 2.5],
+                   'chile':[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                   'sichuan':[1.0, 1.125, 1.25, 1.5, 2.0],
+                   'tohoku':[1.0, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0],
+                   'newzealand':[1.0, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0],
+                   'sumatra':[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+                   }
+    
+    kwargs['shake_dir'] = "/home/jmwilson/Desktop/ShakeMaps/{}_shakemaps/".format(region)
     kwargs['shake_threshold'] = 0.2
-    #kwargs['shake_rtrees_pickle'] = None#"/home/jmwilson/Desktop/nepal_rtrees" # None #
     
-    gmpe_file_path = '/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/pickles/nepal_GMPE_ab1-0_magInt_nfcorrection_percSource1-0.pkl'
-    scaling_multiplier = 20
+    verifier = ShakingExceedanceVerifier(*pargs, **kwargs)
     
+    abrat_list = abrat_lists[region]
+    scaling_mult_list = np.arange(0, 10, 0.01)
+    opt_bnds = [4.05, 5.0]
+    scores = np.zeros((len(abrat_list), len(scaling_mult_list)))
+    opt_scores = []
+    opt_multipliers = []
+    optimized_abrats = []
     
-#    nepal_verifier = ShakingExceedanceVerifier(*pargs, **kwargs)
-#    
-#    nepal_verifier.verify_GMPE(gmpe_file_path, scaling_multiplier)
-#    
-#    print("Score: {:0.4f}".format(nepal_verifier.score))
-    
-    plot_xyz_image(nepal_verifier.obs_exceedance_rec, logz=False, fignum=2)
+    for i, abrat in enumerate(abrat_list):
+        abrat_str = str(abrat).replace('.','-')
+        gmpe_file_path = '/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{}/{}_GMPE_ab{}_magInt_nfcorrection_percSource1-0.pkl'.format(region, region, abrat_str)
+        
+        for j, scaling_multiplier in enumerate(scaling_mult_list):
+            score = verifier.verify_GMPE(gmpe_file_path, scaling_multiplier)
+            scores[i, j] = score
 
-#    aftershock_number = open_xyz_file("/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_tInt_etas_2015-04-25 06:13:00+00:00/etas_tInt_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz")
-#    plot_xyz_image(aftershock_number, logz=False, fignum=3)
+#        opt_result = opt.minimize_scalar(lambda scaling_multiplier: -1*verifier.verify_GMPE(gmpe_file_path, scaling_multiplier), bounds=opt_bnds, method='Bounded')
+#        if opt_result.success:
+#            optimal_multiplier = opt_result.x
+#            opt_scores.append(verifier.verify_GMPE(gmpe_file_path, optimal_multiplier))
+#            opt_multipliers.append(optimal_multiplier)
+#            optimized_abrats.append(abrat)
+#        
 #
+#    optimized_abrats_interp_func = interp1d(optimized_abrats, opt_scores, kind='cubic')
+#    ab_opt_result = opt.minimize_scalar(lambda x: -1*optimized_abrats_interp_func(x), bounds=[1.5,2.0], method='Bounded')
+    
+#    
+    plt.close(1)
+    plt.figure(1)
+    plt.title("Scores vs scaling multiplier")
+    for i, scorelist in enumerate(scores):
+        plt.plot(scaling_mult_list, scorelist, label="ab ratio = {}".format(abrat_list[i]))
+    plt.ylabel("GMSS")
+    plt.xlabel("Scaling factor")
+    plt.legend()
+    
+
+#    plt.close(2)
+#    plt.figure(2)
+#    abrats_complete = np.arange(min(optimized_abrats), max(optimized_abrats), 0.01)
+#    plt.title("Optimal Scores")
+#    plt.plot(optimized_abrats, opt_scores, 'bo')
+#    plt.plot(abrats_complete, optimized_abrats_interp_func(abrats_complete), 'b-')
+#    plt.plot(ab_opt_result.x, optimized_abrats_interp_func(ab_opt_result.x), 'r*', label="Optimal $\eta$: {:.3}".format(ab_opt_result.x))
+#    plt.ylabel("GMSS")
+#    plt.xlabel("$\eta$")
+#    plt.legend()
+    
+    plt.show()
+#    
+#    
+#    plot_xyz_image(verifier.obs_exceedance_rec, logz=False, fignum=3, colorbounds=[0,3])
 #
-    predict_exceed_rec = open_xyz_file("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/pickles/nepal_GMPE_magInt_nfcorrection_percSource1-0.xyz")
-    predict_exceed_rec['z'] = np.round(predict_exceed_rec['z']*20)
-    plot_xyz_image(predict_exceed_rec, logz=False, fignum=4)
+##    aftershock_number = open_xyz_file("/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_tInt_etas_2015-04-25 06:13:00+00:00/etas_tInt_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz")
+##    plot_xyz_image(aftershock_number, logz=False, fignum=4)
+##
+##
+#    predict_exceed_rec = open_xyz_file("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{0}/{0}_GMPE_ab2-0_magInt_nfcorrection_percSource1-0.xyz".format(region))
+#    predict_exceed_rec['z'] = np.round(predict_exceed_rec['z']*1.93)
+#    plot_xyz_image(predict_exceed_rec, logz=False, fignum=5, colorbounds=[0,3])
 
     
     

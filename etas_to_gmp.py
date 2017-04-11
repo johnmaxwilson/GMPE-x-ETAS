@@ -296,11 +296,11 @@ def etas2gm_intOverMag(etas_src='etas_src/kyushu_immediate2016-06-19_20:48:43_52
     # We don't need to do logz on expected number. # if do_logz: ETAS_array['z']=numpy.log10(ETAS_array['z'])
     #
     #
-    if fignum!=None:
-        plt.figure(fignum)
-        plt.clf()
-        plot_xyz_image(ETAS_array, fignum=fignum, logz=False, cmap='jet')
-        plt.title('ETAS number')
+    #if fignum!=None:
+    #    plt.figure(fignum)
+    #    plt.clf()
+    #    plot_xyz_image(ETAS_array, fignum=fignum, logz=False, cmap='jet')
+    #    plt.title('ETAS number')
 
     #
     lons = sorted(list(set([x for x,y,z in ETAS_array])))
@@ -580,23 +580,32 @@ def calc_exceedance_intOverMag(ETAS_rec=None, lon_range=None, lat_range=None, m_
     #d_lat = (lat_range[1]-lat_range[0])/lat_range[2]
     #d_lon = (lon_range[1]-lon_range[0])/lon_range[2]
     #
-    j_prev=-1
-    for (j, (lon1, lat1, z_en)), (k, (lon2, lat2, z_g)) in itertools.product(enumerate(ETAS_rec), enumerate(GMPE_rec)):
-        # M=rate_to_m(z_e)
-        if j!=j_prev and j%100==0:
-            print('new source[{}]: {}/{}'.format(os.getpid(), j, len(ETAS_rec)))
-            j_prev=j
-        #
-        # yoder: i think it will make more sense to calculate the magnitude and rate separately, since we're given the rate-density.
-        # moreover, i think we can interpret this as an excedence probabiltiy density, but the will be more to work out for that...
-        ETAS_n = z_en
-        #
-        distance = spherical_dist(lon_lat_from=[lon1, lat1], lon_lat_to=[lon2, lat2])
-        #
-        # Integrate over all magnitudes, returns the full exceedance contribution from cell j to cell k
-        rate_exceed_mag_integral_result = ETAS_n*magInt_integral_result_function(distance)
-        #
-        GMPE_rec['z'][k] += rate_exceed_mag_integral_result
+    
+    # 
+    for j, row in enumerate(GMPE_rec):
+        if j%100==0:
+            print('new GMPE cell[{}]: {}/{}'.format(os.getpid(), j, len(GMPE_rec)))
+        distances = dists_to_bins(ETAS_rec, row)
+        row['z'] += (ETAS_rec['z']*magInt_integral_result_function(distances)).sum()
+    
+    
+    # This loop over every pair of points, and calculating distance using the math package, was the time sink.
+    #  We've replaced this with the above loop
+    #j_prev=-1
+    #for (j, (lon1, lat1, z_en)), (k, (lon2, lat2, z_g)) in itertools.product(enumerate(ETAS_rec), enumerate(GMPE_rec)):
+    #    # M=rate_to_m(z_e)
+    #    if j!=j_prev and j%100==0:
+    #        print('new source[{}]: {}/{}'.format(os.getpid(), j, len(ETAS_rec)))
+    #        j_prev=j
+    #    #
+    #    ETAS_n = z_en
+    #    #
+    #    distance = spherical_dist(lon_lat_from=[lon1, lat1], lon_lat_to=[lon2, lat2])
+    #    #
+    #    # Integrate over all magnitudes, returns the full exceedance contribution from cell j to cell k
+    #    rate_exceed_mag_integral_result = ETAS_n*magInt_integral_result_function(distance)
+    #    #
+    #    GMPE_rec['z'][k] += rate_exceed_mag_integral_result
         
     # Wilson: Could turn this rate of exceedance into a probability of exceedance over a time interval, plug this rate into eg Poissonian 1-exp(-Rate*Time)
     #print('finished with GMPE_rec, len={}'.format(len(GMPE_rec)))
@@ -626,6 +635,22 @@ def magIntegrand_improved(R, mc, m_max, b, threshold, motion_type='PGA-soil'):
     return f
 
 #
+def dists_to_bins(rec_from, rec_row_to):
+    
+    lambs = rec_from['x']*np.pi/180
+    phis  = rec_from['y']*np.pi/180
+
+    lambf = rec_row_to['x']*np.pi/180
+    phif = rec_row_to['y']*np.pi/180
+    
+    #
+    dlambda = (lambf - lambs)
+    #this one is supposed to be bulletproof:
+    sighat3 = np.arctan( np.sqrt((np.cos(phif)*np.sin(dlambda))**2.0 + (np.cos(phis)*np.sin(phif) - np.sin(phis)*np.cos(phif)*np.cos(dlambda))**2.0 ) / 
+                      (np.sin(phis)*np.sin(phif) + np.cos(phis)*np.cos(phif)*np.cos(dlambda))  )
+
+    #
+    return 6378.1 * sighat3
 #
 def GR_num_density(M, ETAS_n, mc, m_max, b):
     return ETAS_n/(10**(-b*mc)-10**(-b*m_max))* b * np.log(10)*10**(b*(-M))
@@ -1031,41 +1056,97 @@ if __name__=='__main__':
             pargs+=[arg]
         #
     #
-    regions = ['nepal', 'kumamoto']
-    regind = 0
-    region = regions[regind]
+    #regind = int(pargs[0])
+    region = pargs[0]
+    #
+    regions = ['nepal', 'chile', 'sichuan', 'tohoku', 'newzealand', 'sumatra', 'iquique', 'swnz', 'hokkaido']
+    #regind = 0
+    #region = regions[regind]
     
     bTimeInt = 1
     
-    abrat_str = '3-35308'
+    #abrat_str = '1-0'
     
     # enforce float types:
     #kwds = {key:float(val) for key,val in kwds.items()}
     #pargs = [float(x) for x in pargs]
     #
-    if region == 'nepal':
-        if bTimeInt: kwds['etas_src'] = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_tInt_etas_2015-04-25 06:13:00+00:00/etas_ab{}_tInt_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz'.format(abrat_str)
-        else: kwds['etas_src'] = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_rateden_etas_2015-04-25 06:13:00+00:00/etas_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz'
-        kwds['maxMag'] = 7.8          # Mainshock magnitude of this analysis
-    if region == 'kumamoto':
-        if bTimeInt: kwds['etas_src'] = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/kumamoto_tInt_etas_2016-04-15 16:30:00+00:00/etas_ab{}_tInt_kumamoto_2015_04_2016-04-15_16:30:00+00:00.xyz'.format(abrat_str)
-        else: kwds['etas_src'] = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/kumamoto_rateden_etas_2016-04-15 16:30:00+00:00/etas_rateden_kumamoto_2015_04_2016-04-15_16:30:00+00:00.xyz'
-        kwds['maxMag'] = 7.0          # Mainshock magnitude of this analysis
-    
-    kwds['threshold'] = 0.2          # acceleration in g
+    kwds['threshold']  = 0.2         # acceleration in g
     kwds['percSource'] = 1.0         # top fraction of ETAS bins to use as shaking sources
-    kwds['fignum'] = 0               # start counting figures
-    kwds['n_procs'] = 1              # number of processors to use
+    kwds['fignum']     = 0           # start counting figures
+    kwds['n_procs']    = 1           # number of processors to use    
     #
-    if bTimeInt:
-        kwds['fname_out']='pickles/{}_GMPE_ab{}_magInt_nfcorrection_percSource{}'.format(region, abrat_str, str(kwds['percSource']).replace('.', '-'))
-        kwds['do_logz'] = False       # don't convert input ETAS to log10(ETAS)
-        X = etas2gm_intOverMag(*pargs, **kwds)
-    else:
-        kwds['fname_out']='pickles/{}_GMPE_etasInv_percSource{}'.format(region, str(kwds['percSource']).replace('.', '-'))
-        kwds['do_logz'] = True          # convert input ETAS to log10(ETAS).  Only for etas2gm_invertETAS
-        kwds['year_fraction'] = 1.0/12.0 # fraction of year for which to predict exceedances, only used to etas2gm_invertETAS
-        X = etas2gm_invertETAS(*pargs, **kwds)
+    etas_source_dir = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/'
+    gmpe_output_dir = '/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{}'.format(region)
+    
+    
+    if region == 'nepal':
+        kwds['maxMag'] = 7.8         # Mainshock magnitude of this analysis
+        if bTimeInt:
+            etas_subfolder = 'nepal_tInt_etas_2015-04-25 06:13:00+00:00'
+            abrat_list = [1.5]
+        else:
+            kwds['etas_src'] = os.path.join(etas_source_dir, 'nepal_rateden_etas_2015-04-25 06:13:00+00:00/etas_nepal.xyz')
+            kwds['fname_out']= os.path.join(gmpe_output_dir, '{}_GMPE_magInv_percSource{}'.format(region, str(kwds['percSource']).replace('.', '-')))
+    if region == 'chile':
+        kwds['maxMag'] = 8.8         # Mainshock magnitude of this analysis
+        if bTimeInt:
+            etas_subfolder = 'chile_tInt_etas_2010-02-27 06:40:00+00:00'
+            abrat_list = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        else: print("No rateden folder for this region")
+    if region == 'sichuan':
+        kwds['maxMag'] = 7.9         # Mainshock magnitude of this analysis
+        if bTimeInt:
+            etas_subfolder = 'sichuan_tInt_etas_2008-05-12 06:35:00+00:00'
+            abrat_list = [1.5, 2.0]
+        else: print("No rateden folder for this region")
+    if region == 'tohoku':
+        kwds['maxMag'] = 9.1         # Mainshock magnitude of this analysis
+        if bTimeInt:
+            etas_subfolder = 'tohoku_tInt_etas_2011-03-11 05:48:00+00:00'
+            abrat_list = [1.75, 2.25]
+        else: print("No rateden folder for this region")
+    if region == 'newzealand':
+        kwds['maxMag'] = 7.8         # Mainshock magnitude of this analysis
+        if bTimeInt:
+           etas_subfolder = 'newzealand_tInt_etas_2016-11-13 11:05:00+00:00'
+           abrat_list = [1.75, 2.25]
+        else: print("No rateden folder for this region")
+    if region == 'sumatra':
+        kwds['maxMag'] = 9.1         # Mainshock magnitude of this analysis
+        etas_subfolder = 'sumatra_tInt_etas_2004-12-26 01:00:00+00:00'
+        abrat_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    if region == 'iquique':
+        #2014-04-01 23:46:47 (UTC)
+        kwds['maxMag'] = 8.2
+        t_now = dtm.datetime(2014, 4, 1, 23, 48, 00, tzinfo=tzutc)
+        etas_subfolder = 'iquique_tInt_etas_2014-04-01 23:48:00+00:00'
+        abrat_list = [3.5, 4.0]
+    if region == 'swnz':
+        #2009-07-15 09:22:29 (UTC)
+        kwds['maxMag'] = 7.8
+        t_now = dtm.datetime(2009, 7, 15, 9, 24, 00, tzinfo=tzutc)
+        etas_subfolder = 'swnz_tInt_etas_2009-07-15 09:24:00+00:00'
+        abrat_list = [3.5, 4.0]
+    if region == 'hokkaido':
+        #2003-09-25 19:50:06 (UTC)
+        kwds['maxMag'] = 8.3
+        t_now = dtm.datetime(2003, 9, 25, 19, 51, 00, tzinfo=tzutc)
+        etas_subfolder = 'hokkaido_tInt_etas_2003-09-25 19:51:00+00:00'
+        abrat_list = [3.5, 4.0]
+    #
+    #
+    abrat_str_list = [str(abrat).replace('.', '-') for abrat in abrat_list]
+    for abrat_str in abrat_str_list:
+        if bTimeInt:
+            kwds['etas_src'] = os.path.join(etas_source_dir, etas_subfolder, 'etas_ab{}_tInt_{}.xyz'.format(abrat_str, region))
+            kwds['fname_out']= os.path.join(gmpe_output_dir, '{}_GMPE_ab{}_magInt_nfcorrection_percSource{}'.format(region, abrat_str, str(kwds['percSource']).replace('.', '-')))
+            kwds['do_logz'] = False       # don't convert input ETAS to log10(ETAS)
+            X = etas2gm_intOverMag(**kwds)
+        else:
+            kwds['do_logz'] = True          # convert input ETAS to log10(ETAS).  Only for etas2gm_invertETAS
+            kwds['year_fraction'] = 1.0/12.0 # fraction of year for which to predict exceedances, only used to etas2gm_invertETAS
+            X = etas2gm_invertETAS(**kwds)
         
 else:
     plt.ion()
