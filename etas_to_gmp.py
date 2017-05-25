@@ -580,8 +580,7 @@ def calc_exceedance_intOverMag(ETAS_rec=None, lon_range=None, lat_range=None, m_
     #d_lat = (lat_range[1]-lat_range[0])/lat_range[2]
     #d_lon = (lon_range[1]-lon_range[0])/lon_range[2]
     #
-    
-    # 
+    # For each cell in the GMPE_rec, do a vectorized calc for distances to all ETAS cells, then sum together all shaking contributions
     for j, row in enumerate(GMPE_rec):
         if j%100==0:
             print('new GMPE cell[{}]: {}/{}'.format(os.getpid(), j, len(GMPE_rec)))
@@ -1076,7 +1075,7 @@ if __name__=='__main__':
     kwds['fignum']     = 0           # start counting figures
     kwds['n_procs']    = 1           # number of processors to use    
     #
-    etas_source_dir = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/'
+    etas_source_dir = '/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/{}_tInt_etas'.format(region)
     gmpe_output_dir = '/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{}'.format(region)
     
     
@@ -1084,62 +1083,49 @@ if __name__=='__main__':
         kwds['maxMag'] = 7.8         # Mainshock magnitude of this analysis
         if bTimeInt:
             etas_subfolder = 'nepal_tInt_etas_2015-04-25 06:13:00+00:00'
-            abrat_list = [3.0, 3.5, 4.0]
+            abrat_list = [1.875, 2.125]
         else:
             kwds['etas_src'] = os.path.join(etas_source_dir, 'nepal_rateden_etas_2015-04-25 06:13:00+00:00/etas_nepal.xyz')
             kwds['fname_out']= os.path.join(gmpe_output_dir, '{}_GMPE_magInv_percSource{}'.format(region, str(kwds['percSource']).replace('.', '-')))
     if region == 'chile':
-        kwds['maxMag'] = 8.8         # Mainshock magnitude of this analysis
-        if bTimeInt:
-            etas_subfolder = 'chile_tInt_etas_2010-02-27 06:40:00+00:00'
-            abrat_list = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
-        else: print("No rateden folder for this region")
+        kwds['maxMag'] = 8.8
+        abrat_list = [1.5,2.5,3.5]
     if region == 'sichuan':
-        kwds['maxMag'] = 7.9         # Mainshock magnitude of this analysis
-        if bTimeInt:
-            etas_subfolder = 'sichuan_tInt_etas_2008-05-12 06:35:00+00:00'
-            abrat_list = [1.5, 2.0]
-        else: print("No rateden folder for this region")
+        kwds['maxMag'] = 7.9
+        abrat_list = [1.0]
     if region == 'tohoku':
-        kwds['maxMag'] = 9.1         # Mainshock magnitude of this analysis
-        if bTimeInt:
-            etas_subfolder = 'tohoku_tInt_etas_2011-03-11 05:48:00+00:00'
-            abrat_list = [1.75, 2.25]
-        else: print("No rateden folder for this region")
+        kwds['maxMag'] = 9.1
+        abrat_list = [1.75, 2.25]
     if region == 'newzealand':
-        kwds['maxMag'] = 7.8         # Mainshock magnitude of this analysis
-        if bTimeInt:
-           etas_subfolder = 'newzealand_tInt_etas_2016-11-13 11:05:00+00:00'
-           abrat_list = [1.75, 2.25]
-        else: print("No rateden folder for this region")
+        kwds['maxMag'] = 7.8
+        abrat_list = [1.75, 2.25]
     if region == 'sumatra':
-        kwds['maxMag'] = 9.1         # Mainshock magnitude of this analysis
-        etas_subfolder = 'sumatra_tInt_etas_2004-12-26 01:00:00+00:00'
+        kwds['maxMag'] = 9.1
         abrat_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
     if region == 'iquique':
-        #2014-04-01 23:46:47 (UTC)
         kwds['maxMag'] = 8.2
-        t_now = dtm.datetime(2014, 4, 1, 23, 48, 00, tzinfo=tzutc)
-        etas_subfolder = 'iquique_tInt_etas_2014-04-01 23:48:00+00:00'
-        abrat_list = [3.5, 4.0]
-    if region == 'swnz':
-        #2009-07-15 09:22:29 (UTC)
-        kwds['maxMag'] = 7.8
-        t_now = dtm.datetime(2009, 7, 15, 9, 24, 00, tzinfo=tzutc)
-        etas_subfolder = 'swnz_tInt_etas_2009-07-15 09:24:00+00:00'
         abrat_list = [3.5, 4.0]
     if region == 'hokkaido':
-        #2003-09-25 19:50:06 (UTC)
         kwds['maxMag'] = 8.3
-        t_now = dtm.datetime(2003, 9, 25, 19, 51, 00, tzinfo=tzutc)
-        etas_subfolder = 'hokkaido_tInt_etas_2003-09-25 19:51:00+00:00'
         abrat_list = [3.5, 4.0]
+    if region == 'ecuador':
+        kwds['maxMag'] = 7.8
+        abrat_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    if region == 'illapel':
+        kwds['maxMag'] = 8.3
+        abrat_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    if region == 'gujarat':
+        kwds['maxMag'] = 7.7
+        abrat_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    if region == 'awaran':
+        kwds['maxMag'] = 7.7
+        abrat_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
     #
     #
     abrat_str_list = [str(abrat).replace('.', '-') for abrat in abrat_list]
     for abrat_str in abrat_str_list:
         if bTimeInt:
-            kwds['etas_src'] = os.path.join(etas_source_dir, etas_subfolder, 'etas_ab{}_tInt_{}.xyz'.format(abrat_str, region))
+            kwds['etas_src'] = os.path.join(etas_source_dir, 'etas_ab{}_tInt_{}.xyz'.format(abrat_str, region))
             kwds['fname_out']= os.path.join(gmpe_output_dir, '{}_GMPE_ab{}_magInt_nfcorrection_percSource{}'.format(region, abrat_str, str(kwds['percSource']).replace('.', '-')))
             kwds['do_logz'] = False       # don't convert input ETAS to log10(ETAS)
             X = etas2gm_intOverMag(**kwds)

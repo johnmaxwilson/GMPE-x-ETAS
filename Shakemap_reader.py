@@ -16,6 +16,7 @@ import itertools
 from xml.etree import ElementTree
 import scipy.optimize as opt
 from scipy.interpolate import interp1d
+import itertools
 
 
 class ShakingExceedanceVerifier:
@@ -188,6 +189,8 @@ class ShakingExceedanceVerifier:
         Calculate contingency table for our GMPE forecast against observed shaking data
         """
         obs_exceedance_array_valid = self.obs_exceedance_rec['z'][~self.valid_data_mask]
+#        if len(obs_exceedance_array_valid) == 0:
+        
         gmpe_array_valid = self.gmpe_rec['z'][~self.valid_data_mask]
         # Need to forecast integer values of exceedance, scaled by external multiplier
         gmpe_array_valid = np.round(gmpe_array_valid*self.forecast_scaling_multiplier)    
@@ -317,15 +320,17 @@ def plot_xyz_image(xyz, fignum=0, logz=True, needTranspose=False, interp_type='n
         #m.fillcontinents(color='lemonchiffon',lake_color='PaleTurquoise', zorder=0)
         m.drawstates()
         m.drawcountries()
+        m.drawmeridians(np.arange(np.ceil(np.min(mgx)),np.floor(np.max(mgx)),2), labels=[0,0,0,1])
+        m.drawparallels(np.arange(np.ceil(np.min(mgy)),np.floor(np.max(mgy)),2), labels=[1,0,0,0])
         m.pcolor(mgx, mgy, zz, cmap=cmap, vmin=colorbounds[0], vmax=colorbounds[1])
-    plt.colorbar()
+    #plt.colorbar()
     
     #plt.figure(fignum)
     #plt.clf()
     #plt.imshow(zz, interpolation=interp_type, cmap=cmap)
     #plt.colorbar()
     
-    
+
 if __name__ == '__main__':
     
     kwargs={}
@@ -341,86 +346,156 @@ if __name__ == '__main__':
             pargs+=[arg]
     
     
-     #            0         1        2          3            4           5          6         7        8
-    regions = ['nepal', 'chile', 'sichuan', 'tohoku', 'newzealand', 'sumatra', 'iquique', 'swnz', 'hokkaido']
-    regind = 1
-    region = regions[regind]
+    #              0           1          2         3         4        5         6        
+    regions = ['gujarat', 'hokkaido', 'sumatra','sichuan', 'chile', 'tohoku', 'awaran',
+               'iquique', 'nepal', 'illapel', 'newzealand', 'ecuador']
+    #              7         8         9           10           11
+    reg_legible = ['Gujarat', 'Hokkaido', 'Sumatra','Sichuan', 'Bio-Bio', 'Tohoku', 'Awaran',
+                   'Iquique', 'Nepal', 'Illapel', 'New Zealand', 'Ecuador']
+    #regind = 0
+    #region = regions[regind]
     
-    abrat_lists = {'nepal':[1.5, 1.75, 2.0, 2.25, 2.5],
-                   'chile':[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-                   'sichuan':[1.0, 1.125, 1.25, 1.5, 2.0],
-                   'tohoku':[1.0, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0],
-                   'newzealand':[1.0, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0],
-                   'sumatra':[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
-                   }
+    quake_properties =              ['mag']
+    quake_values     = {'gujarat':   [7.7],
+                        'hokkaido':  [8.3],
+                        'sumatra':   [9.1],
+                        'sichuan':   [7.9],
+                        'chile':     [8.8],
+                        'tohoku':    [9.1],
+                        'awaran':    [7.7],
+                        'iquique':   [8.2],
+                        'nepal':     [7.8],
+                        'illapel':   [8.3],
+                        'newzealand':[7.8],
+                        'ecuador':   [7.8]}
+    quakes = {key:{ky:vl for ky,vl in zip(quake_properties, vals)} for key,vals in quake_values.items()}
+
     
-    kwargs['shake_dir'] = "/home/jmwilson/Desktop/ShakeMaps/{}_shakemaps/".format(region)
-    kwargs['shake_threshold'] = 0.2
+    reset_verifiers = 0
+    see_GMSSvsMult = 1
+    do_optimize = 0
     
-    verifier = ShakingExceedanceVerifier(*pargs, **kwargs)
     
-    abrat_list = abrat_lists[region]
-    scaling_mult_list = np.arange(0, 10, 0.01)
-    opt_bnds = [4.05, 5.0]
-    scores = np.zeros((len(abrat_list), len(scaling_mult_list)))
-    opt_scores = []
-    opt_multipliers = []
-    optimized_abrats = []
+    GMPE_DIR = '/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/'
+    all_opt_bounds = {'nepal':[[4.6,5.8],[14.1,17],[23.8,27]],
+                      'chile':[[0.7,0.73],[2.05,2.16],[3.3,3.6]],
+                      'sichuan':[[4.1,4.3]],
+                      'tohoku':[[0.35,0.43],[1.1,1.2],[1.9,2.07]],
+                      'newzealand':[[4.613,5.5],[13.7,15.5],[23,26]],
+                      'sumatra':[[0.506,0.511]],
+                      'iquique':[[1.5,2.42],[5.5,7.4],[10.8,12.3]],
+                      'hokkaido':[[1.7,1.9]],
+                      'ecuador':[[4.6,6.1],[15,17]],
+                      'illapel':[[1.7,1.9],[5.4,5.8],[9.1,9.6],[12.7,13.5]],
+                      'gujarat':[[5.6,6.4],[17,19],[28.2,29.7]],
+                      'awaran':[[5.4,6.9],[16.6,20.4],[27.9,30]]}
+    all_scores = {}
     
-    for i, abrat in enumerate(abrat_list):
-        abrat_str = str(abrat).replace('.','-')
-        gmpe_file_path = '/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{}/{}_GMPE_ab{}_magInt_nfcorrection_percSource1-0.pkl'.format(region, region, abrat_str)
+    if do_optimize:
+        all_opt_multipliers = {}
+        all_opt_scores = {}
         
-        for j, scaling_multiplier in enumerate(scaling_mult_list):
-            score = verifier.verify_GMPE(gmpe_file_path, scaling_multiplier)
-            scores[i, j] = score
-
-#        opt_result = opt.minimize_scalar(lambda scaling_multiplier: -1*verifier.verify_GMPE(gmpe_file_path, scaling_multiplier), bounds=opt_bnds, method='Bounded')
-#        if opt_result.success:
-#            optimal_multiplier = opt_result.x
-#            opt_scores.append(verifier.verify_GMPE(gmpe_file_path, optimal_multiplier))
-#            opt_multipliers.append(optimal_multiplier)
-#            optimized_abrats.append(abrat)
-#        
-#
-#    optimized_abrats_interp_func = interp1d(optimized_abrats, opt_scores, kind='cubic')
-#    ab_opt_result = opt.minimize_scalar(lambda x: -1*optimized_abrats_interp_func(x), bounds=[1.5,2.0], method='Bounded')
+    if reset_verifiers:
+        verifiers = {}
     
-#    
-    plt.close(1)
-    plt.figure(1)
-    plt.title("Scores vs scaling multiplier")
-    for i, scorelist in enumerate(scores):
-        plt.plot(scaling_mult_list, scorelist, label="ab ratio = {}".format(abrat_list[i]))
-    plt.ylabel("GMSS")
-    plt.xlabel("Scaling factor")
-    plt.legend()
+    for k, region in enumerate(['tohoku']):
+        kwargs['shake_threshold'] = 0.2
+        kwargs['shake_dir'] = "/home/jmwilson/Desktop/ShakeMaps/{}_shakemaps/".format(region)
+        
+        if region not in verifiers:
+            verifier = ShakingExceedanceVerifier(*pargs, **kwargs)
+            verifiers[region] = verifier
+        else:
+            verifier = verifiers[region]
+        
+        abrat = 2.0
+        scaling_mult_list = np.arange(0, 2.5, 1e-3)
+        scores = np.zeros(len(scaling_mult_list))
+        
+        abrat_str = str(abrat).replace('.','-')
+        gmpe_file_path = os.path.join(GMPE_DIR, '{0}/{0}_GMPE_ab{1}_magInt_nfcorrection_percSource1-0.pkl'.format(region, abrat_str))
+        
+        if see_GMSSvsMult:
+            for j, scaling_multiplier in enumerate(scaling_mult_list):
+                score = verifier.verify_GMPE(gmpe_file_path, scaling_multiplier)
+                scores[j] = score
+            all_scores[region] = scores
+        
+        if do_optimize:
+            opt_bounds_list = all_opt_bounds[region]
+            opt_scores = []
+            opt_multipliers = []
+            for opt_bounds in opt_bounds_list:
+                opt_result = opt.minimize_scalar(lambda scaling_multiplier: -1*verifier.verify_GMPE(gmpe_file_path, scaling_multiplier), 
+                                                 bounds=opt_bounds, method='Bounded')
+                if opt_result.success:
+                    optimal_multiplier = opt_result.x
+                    opt_scores.append(verifier.verify_GMPE(gmpe_file_path, optimal_multiplier))
+                    opt_multipliers.append(optimal_multiplier)
+            
+            all_opt_scores[region] = max(opt_scores)
+            all_opt_multipliers[region] = opt_multipliers[opt_scores.index(max(opt_scores))]
+                
+        
+        if see_GMSSvsMult:
+            plt.close(k)
+            plt.figure(k)
+            plt.plot(scaling_mult_list, scores)
+            plt.ylabel("GMSS")
+            plt.xlabel("Scaling factor $\gamma$")
+#            plt.legend()
+            plt.show()
+        
+        if do_optimize:
+#            plt.close(len(regions))
+            plt.figure(len(regions))
+            #plt.title("Optimal Scores ({})".format(region))
+            #max_score = all_opt_scores[region]
+            best_mult = all_opt_multipliers[region]
+            #plt.plot(best_mult, max_score, 'o', label=region)
+            plt.plot(quakes[region]['mag'], best_mult, 'v', label=reg_legible[k])
+            #plt.annotate("{}, {}".format(region, quakes[region]['mag']), (quakes[region]['mag'], best_mult))
+    #
+    if do_optimize:
+        opt_scores_list = np.zeros(len(regions[:10]))
+        opt_mults_list = np.zeros(len(regions[:10]))
+        quake_mag_list = np.zeros(len(regions[:10]))
+        for i, region in enumerate(regions[:10]):
+            quake_mag_list[i]=(quakes[region]['mag'])
+            opt_mults_list[i]=(all_opt_multipliers[region])
+            opt_scores_list[i]=(all_opt_scores[region])
+        
+        plt.figure(len(regions))
+        ([expon, const], pcov) = opt.curve_fit(lambda x, expon, const: const+expon*x, quake_mag_list, np.log10(opt_mults_list))
+        full_mags = np.arange(min(quake_mag_list), max(quake_mag_list), 0.01)
+        fitted_curve = 10**(expon*full_mags+const)
+        plt.plot(full_mags, fitted_curve, 'k-', 
+                 label=r"$\alpha = {:.3f}\pm{:.3f}$".format(const, pcov[1][1])+"\n"+r"$\beta = {:.3f}\pm{:.3f}$".format(expon, pcov[0][0]))
+        #plt.semilogy(full_mags, fitted_curve, 'k-', 
+        #         label=r"$\alpha = {:.3f}\pm{:.3f}$".format(const, pcov[1][1])+"\n"+r"$\beta = {:.3f}\pm{:.3f}$".format(expon, pcov[0][0]))
+        plt.legend()
+        plt.xlabel("Mainshock Magnitude")
+        plt.ylabel("Optimal $\gamma$")
+    #    #opt_mults_list = [x for (y,x) in sorted(zip(quake_mag_list,opt_mults_list), key=lambda pair: pair[0])]
+    #    full_mag_array = np.arange(min(quake_mag_list), max(quake_mag_list), 0.01)
+    #    plt.close(0)
+    #    plt.figure(0)
+    #    plt.plot(quake_mag_list, np.log10(opt_mults_list), 'o')
+    #    plt.plot(full_mag_array, const+full_mag_array*exponent, 'k-')
+    #    #plt.legend()    
+    #    plt.show()
     
-
-#    plt.close(2)
-#    plt.figure(2)
-#    abrats_complete = np.arange(min(optimized_abrats), max(optimized_abrats), 0.01)
-#    plt.title("Optimal Scores")
-#    plt.plot(optimized_abrats, opt_scores, 'bo')
-#    plt.plot(abrats_complete, optimized_abrats_interp_func(abrats_complete), 'b-')
-#    plt.plot(ab_opt_result.x, optimized_abrats_interp_func(ab_opt_result.x), 'r*', label="Optimal $\eta$: {:.3}".format(ab_opt_result.x))
-#    plt.ylabel("GMSS")
-#    plt.xlabel("$\eta$")
-#    plt.legend()
     
-    plt.show()
-#    
 #    
 #    plot_xyz_image(verifier.obs_exceedance_rec, logz=False, fignum=3, colorbounds=[0,3])
-#
-##    aftershock_number = open_xyz_file("/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_tInt_etas_2015-04-25 06:13:00+00:00/etas_tInt_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz")
-##    plot_xyz_image(aftershock_number, logz=False, fignum=4)
-##
-##
-#    predict_exceed_rec = open_xyz_file("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{0}/{0}_GMPE_ab2-0_magInt_nfcorrection_percSource1-0.xyz".format(region))
-#    predict_exceed_rec['z'] = np.round(predict_exceed_rec['z']*1.93)
-#    plot_xyz_image(predict_exceed_rec, logz=False, fignum=5, colorbounds=[0,3])
 
+#    aftershock_number = open_xyz_file("/home/jmwilson/Dropbox/GMPE/globalETAS/etas_outputs/nepal_tInt_etas_2015-04-25 06:13:00+00:00/etas_tInt_nepal_2015_04_2015-04-25_06:13:00+00:00.xyz")
+#    plot_xyz_image(aftershock_number, logz=False, fignum=4)
+#
+#
+#    predict_exceed_rec = open_xyz_file("/home/jmwilson/Dropbox/GMPE/GMPE-x-ETAS/gmpe_outputs/{0}/{0}_GMPE_ab10-0_magInt_nfcorrection_percSource1-0.xyz".format(region))
+#    predict_exceed_rec['z'] = np.round(predict_exceed_rec['z']*3.286)
+#    plot_xyz_image(predict_exceed_rec, logz=False, fignum=5, colorbounds=[0,3])
     
     
     
